@@ -1,0 +1,9 @@
+{
+  "name": "agentodoo-pi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "gentle-pi extension that confirms AgentOdoo writes",
+  "pi": { "extensions": ["./index.js"] },
+  "scripts": { "test": "node --test" }
+}

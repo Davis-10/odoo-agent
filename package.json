@@ -1,0 +1,11 @@
+{
+  "name": "agentodoo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi package for AgentOdoo: the write-confirmation extension and the agent skill",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./integrations/pi/index.js"],
+    "skills": ["./skills"]
+  }
+}

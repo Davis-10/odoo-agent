@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentodoo"
+dynamic = ["version"]
+description = "Personal Odoo work assistant: tasks and timesheets for AI agents, any Odoo version"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["keyring>=24"]
+
+[project.optional-dependencies]
+mcp = ["mcp>=2.3,<3"]
+
+[project.scripts]
+agentodoo = "agentodoo.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "agentodoo.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
