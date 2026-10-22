@@ -3,14 +3,18 @@ import hashlib
 import hmac
 import json
 import logging
+import shutil
+import subprocess
 import sys
 import unittest
 from unittest import mock
 from datetime import date
+from pathlib import Path
 
 try:
     import anyio
     from mcp import Client
+    from mcp.client import advertise
     from mcp_types import ElicitResult
 except ImportError:  # the optional `mcp` extra is not installed
     Client = None
@@ -31,7 +35,7 @@ class McpCase(WriteCase):
         return build_server(profiles=ws.profiles, credentials=ws.credentials,
                             transport_factory=ws.transport_factory, state_dir=ws.dir / "state")
 
-    def call(self, ws, tool, arguments, answer=None):
+    def call(self, ws, tool, arguments, answer=None, extensions=None, mode="auto"):
         """Call one tool; `answer` set means the client supports elicitation and replies with it."""
         asked = []
 
@@ -40,7 +44,8 @@ class McpCase(WriteCase):
             return answer
 
         async def run():
-            async with Client(self.server(ws), elicitation_callback=elicit if answer else None) as client:
+            async with Client(self.server(ws), elicitation_callback=elicit if answer else None,
+                              extensions=extensions, mode=mode) as client:
                 return await client.call_tool(tool, arguments)
 
         result = anyio.run(run)
@@ -100,7 +105,8 @@ class McpReadToolTests(McpCase):
     def test_annotations(self):
         ws, _ = self.workspace(16)
         tools = self.tools(ws)
-        self.assertEqual(READ_ONLY | {"plan_task", "plan_time", "apply_plan"}, set(tools))
+        self.assertEqual(READ_ONLY | {"plan_task", "plan_time", "apply_plan", "confirm_plan", "set_closing_stages"},
+                         set(tools))
         for name in READ_ONLY:
             self.assertTrue(tools[name].annotations.read_only_hint, name)
         for name in ("plan_task", "plan_time"):
@@ -109,6 +115,48 @@ class McpReadToolTests(McpCase):
         self.assertFalse(tools["apply_plan"].annotations.read_only_hint)
         self.assertTrue(tools["apply_plan"].annotations.destructive_hint)
         self.assertEqual({"plan_id", "host_confirmation"}, set(tools["apply_plan"].input_schema["properties"]))
+        closing = tools["set_closing_stages"]  # stage 6 S6
+        self.assertEqual((False, False, None), (closing.annotations.read_only_hint,
+                                                closing.annotations.destructive_hint, closing.meta))
+        self.assertEqual({"stage_ids", "project_stage_ids", "profile"}, set(closing.input_schema["properties"]))
+
+
+class McpClosingStagesTests(McpCase):
+    """stage 6 S6: set_closing_stages in profile mode updates the profile exactly like the CLI setters."""
+
+    def writes(self, odoo):
+        return [(model, method) for model, method in odoo.calls if method in ("create", "write", "unlink")]
+
+    def test_updates_profile_like_cli(self):
+        ws, odoo = self.workspace(16)
+        cli, _ = self.workspace(16)
+        error, text, _ = self.call(ws, "set_closing_stages", {"stage_ids": [2, 1], "project_stage_ids": []})
+        self.assertFalse(error, text)
+        self.assertEqual({"profile": "acme", "closed_stage_ids": [1, 2], "closed_project_stage_ids": []},
+                         json.loads(text))
+        cli.run(["profile", "set-closed-stages", "acme", "2", "1"])
+        cli.run(["profile", "set-closed-project-stages", "acme", "--none"])
+        self.assertEqual(cli.profiles.get("acme"), ws.profiles.get("acme"))
+        error, text, _ = self.call(ws, "set_closing_stages", {"project_stage_ids": [31], "profile": "acme"})
+        self.assertEqual({"profile": "acme", "closed_stage_ids": [1, 2], "closed_project_stage_ids": [31]},
+                         json.loads(text))
+        self.assertEqual([], self.writes(odoo))
+        self.assertFalse((ws.dir / "state" / "host-settings.json").exists())
+
+    def test_refusals_store_nothing(self):
+        ws, odoo = self.workspace(16)
+        before = ws.profiles.get("acme")
+        for arguments, message in (
+                ({"stage_ids": [1, 999]}, "Unknown stage IDs in Odoo: 999"),
+                ({"stage_ids": [1], "project_stage_ids": [998]}, "Unknown project stage IDs in Odoo: 998"),
+                ({}, "Give stage_ids, project_stage_ids or both"),
+                ({"stage_ids": [1], "profile": "nope"}, "Unknown profile 'nope'")):
+            with self.subTest(arguments=arguments):
+                error, text, _ = self.call(ws, "set_closing_stages", arguments)
+                self.assertTrue(error)
+                self.assertIn(message, text)
+                self.assertEqual(before, ws.profiles.get("acme"))
+        self.assertEqual([], self.writes(odoo))
 
 
 class McpPlanToolTests(McpCase):
@@ -256,6 +304,173 @@ class McpApplyTests(McpCase):
         self.assertIn("You cannot log hours in a closed period; nothing was written", text)
         self.assertIn('"status": "rejected"', text)
         self.assertEqual([f"receipts/{plan_id}.json"], self.receipts(ws))
+
+
+from agentodoo import __version__
+
+# Versioned so Claude Desktop, which may cache UI resources by URI, fetches the new card after an update.
+UI_URI = f"ui://agentodoo/plan-{__version__}.html"
+UI_MIME = "text/html;profile=mcp-app"
+
+
+def apps_client(mime_types=(UI_MIME,)):
+    """Client extensions of a host that renders MCP Apps (ext-apps spec 2026-01-26)."""
+    return [advertise("io.modelcontextprotocol/ui", {"mimeTypes": list(mime_types)})]
+
+
+class McpAppsTests(McpCase):
+    ACCEPT = McpApplyTests.ACCEPT
+    assertNothingWritten = McpApplyTests.assertNothingWritten
+
+    def card(self, ws):
+        async def run():
+            async with Client(self.server(ws)) as client:
+                listed = (await client.list_resources()).resources
+                read = await client.read_resource(UI_URI)
+                return listed, read
+        return anyio.run(run)
+
+    # stage 6 S3: plan tools link the card; confirm_plan is app-only and destructive; nothing else has UI
+    def test_tools_declare_ui_meta(self):
+        ws, _ = self.workspace(16)
+        tools = self.tools(ws)
+        for name in ("plan_task", "plan_time"):
+            self.assertEqual({"ui": {"resourceUri": UI_URI}}, tools[name].meta, name)
+        confirm = tools["confirm_plan"]
+        self.assertEqual({"ui": {"visibility": ["app"]}}, confirm.meta)
+        self.assertTrue(confirm.annotations.destructive_hint)
+        self.assertFalse(confirm.annotations.read_only_hint)
+        self.assertEqual({"plan_id"}, set(confirm.input_schema["properties"]))
+        for name in READ_ONLY | {"apply_plan"}:
+            self.assertIsNone(tools[name].meta, name)
+
+    # stage 6 S3: the card is listed and readable as an MCP App, self-contained, with Confirm and Cancel only
+    def test_card_resource(self):
+        ws, _ = self.workspace(16)
+        listed, read = self.card(ws)
+        self.assertEqual([(UI_URI, UI_MIME)], [(str(r.uri), r.mime_type) for r in listed])
+        self.assertEqual(1, len(read.contents))
+        html = read.contents[0]
+        self.assertEqual((UI_URI, UI_MIME), (str(html.uri), html.mime_type))
+        text = html.text
+        self.assertTrue(text.startswith("<!doctype html>"))
+        for control in ('<button id="confirm"', ">Confirm</button>", '<button id="cancel"', ">Cancel</button>",
+                        '"confirm_plan"', "Nothing was written"):
+            self.assertIn(control, text)
+        self.assertEqual(2, text.count("<button"))
+        for external in ("http:", "https:", "//cdn", " src=", "@import", "url("):
+            self.assertNotIn(external, text)
+
+    # stage 6 S3, S4: confirm_plan writes through the same apply and returns the receipt
+    def test_confirm_plan_applies(self):
+        ws, odoo = self.workspace(16)
+        plan_id = self.time_plan(ws)
+        error, text, _ = self.call(ws, "confirm_plan", {"plan_id": plan_id}, extensions=apps_client())
+        self.assertFalse(error, text)
+        receipt = json.loads(text)
+        self.assertEqual(("applied", plan_id, 9001), (receipt["status"], receipt["plan_id"], receipt["record_id"]))
+        self.assertEqual(["account.analytic.line"], self.creates(odoo))
+        self.assertEqual([f"receipts/{plan_id}.json"], self.receipts(ws))
+
+    # stage 6 S3 (L11): on a card client the plan result tells the model the user confirms on the card
+    def test_plan_result_tells_model_to_defer_to_card(self):
+        ws, _ = self.workspace(16)
+        arguments = {"task_id": 9101, "hours": 1.5, "date": TODAY, "description": "Write gate"}
+        error, text, _ = self.call(ws, "plan_time", arguments, extensions=apps_client())
+        self.assertFalse(error, text)
+        plan = json.loads(text)
+        self.assertEqual("card", plan["confirm_on"])
+        self.assertEqual("The user confirms or cancels this plan on the AgentOdoo plan card shown with this "
+                         "result. Do not repeat the plan as a table, do not ask whether to apply it, and do not "
+                         "call apply_plan. Tell the user in one line to press Confirm to write it or Cancel to "
+                         "discard it.", plan["next_step"])
+        error, text, _ = self.call(ws, "plan_time", arguments)
+        self.assertFalse(error, text)
+        self.assertNotIn("confirm_on", json.loads(text))
+        self.assertNotIn("next_step", json.loads(text))
+
+    # stage 6 S4: unknown and already-applied plans are refused, writing nothing more
+    def test_confirm_plan_refusals(self):
+        ws, odoo = self.workspace(16)
+        apps = apps_client()
+        error, text, _ = self.call(ws, "confirm_plan", {"plan_id": "f" * 32}, extensions=apps)
+        self.assertTrue(error)
+        self.assertIn(f"Unknown plan {'f' * 32}", text)
+        self.assertEqual([], self.creates(odoo))
+        plan_id = self.time_plan(ws)
+        self.assertFalse(self.call(ws, "confirm_plan", {"plan_id": plan_id}, extensions=apps)[0])
+        error, text, _ = self.call(ws, "confirm_plan", {"plan_id": plan_id}, extensions=apps)
+        self.assertTrue(error)
+        self.assertIn(f"Plan {plan_id} was already applied (record 9001); nothing was written", text)
+        self.assertEqual(["account.analytic.line"], self.creates(odoo))
+        self.assertEqual([f"receipts/{plan_id}.json"], self.receipts(ws))
+
+    # stage 6 S4: an Odoo rejection is a tool error carrying the receipt, like apply_plan
+    def test_confirm_plan_rejected_reports_receipt(self):
+        ws, odoo = self.workspace(16)
+        plan_id = self.time_plan(ws)
+        odoo.fail_create = "fault"
+        error, text, _ = self.call(ws, "confirm_plan", {"plan_id": plan_id}, extensions=apps_client())
+        self.assertTrue(error)
+        self.assertIn("You cannot log hours in a closed period; nothing was written", text)
+        self.assertIn('"status": "rejected"', text)
+
+    # stage 6 S3: clients without MCP Apps may not hide app-only tools, so confirm_plan refuses there
+    def test_confirm_plan_refuses_without_apps_client(self):
+        ws, odoo = self.workspace(16)
+        ws.run(["host-gate", "init"])
+        plan_id = self.time_plan(ws)
+        before = len(odoo.records["account.analytic.line"])
+        for label, answer, extensions in (("plain", None, None), ("elicitation", self.ACCEPT, None),
+                                          ("no html apps", None, apps_client(()))):
+            with self.subTest(label):
+                error, text, asked = self.call(ws, "confirm_plan", {"plan_id": plan_id}, answer,
+                                               extensions=extensions)
+                self.assertTrue(error)
+                self.assertIn(f"Plan {plan_id} can only be confirmed on the plan card, in a client that shows MCP "
+                              "Apps; nothing was written. Use apply_plan instead.", text)
+                self.assertEqual([], asked)
+        self.assertNothingWritten(ws, odoo, before)
+
+    # stage 6 S3: on an MCP Apps client apply_plan refuses, even with elicitation or a valid host confirmation
+    def test_apply_plan_refuses_on_apps_client(self):
+        ws, odoo = self.workspace(16)
+        ws.run(["host-gate", "init"])
+        plan_id = self.time_plan(ws)
+        before = len(odoo.records["account.analytic.line"])
+        for label, answer, extra, mode in (
+                ("plain", None, {}, "auto"), ("legacy handshake", None, {}, "legacy"),
+                ("elicitation", self.ACCEPT, {}, "auto"),
+                ("host confirmation", None, {"host_confirmation": self.sign(ws, plan_id)}, "auto")):
+            with self.subTest(label):
+                error, text, asked = self.call(ws, "apply_plan", {"plan_id": plan_id} | extra, answer,
+                                               extensions=apps_client(), mode=mode)
+                self.assertTrue(error)
+                self.assertIn(f"Plan {plan_id} must be confirmed by the user with the Confirm button on the plan "
+                              "card; nothing was written", text)
+                self.assertEqual([], asked)
+        self.assertNothingWritten(ws, odoo, before)
+
+    # stage 6 S3: a client without the HTML app MIME type keeps the stage 4 paths
+    def test_apply_plan_unchanged_without_html_apps(self):
+        ws, odoo = self.workspace(16)
+        plan_id = self.time_plan(ws)
+        error, text, _ = self.call(ws, "apply_plan", {"plan_id": plan_id}, extensions=apps_client(()))
+        self.assertTrue(error)
+        self.assertIn(f"agentodoo apply {plan_id} --confirm {plan_id}", text)
+        error, text, asked = self.call(ws, "apply_plan", {"plan_id": plan_id}, self.ACCEPT,
+                                       extensions=[advertise("com.example/other")])
+        self.assertFalse(error, text)
+        self.assertEqual(1, len(asked))
+
+
+class McpCardScriptTests(unittest.TestCase):
+    # stage 6 S3: the card's script, driven with a fake host bridge (node --test)
+    @unittest.skipIf(shutil.which("node") is None, "node is not installed")
+    def test_card_script(self):
+        script = Path(__file__).parent / "ui" / "plan_card.test.mjs"
+        result = subprocess.run(["node", "--test", str(script)], capture_output=True, text=True, timeout=120)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
 
 class McpCliTests(unittest.TestCase):

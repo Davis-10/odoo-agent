@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
-from agentodoo import __version__, service
+from agentodoo import __version__, host_config, service
 from agentodoo.credentials import CredentialStore, KeyringCredentials
 from agentodoo.errors import AgentOdooError, ConfigurationError
 from agentodoo.host_gate import init_key
@@ -134,11 +135,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="Creates <state dir>/host-gate.key (mode 0600). Keeps an existing key unless --rotate.")
     gate_init.add_argument("--rotate", action="store_true", help="replace the existing key")
 
-    commands.add_parser(
+    mcp = commands.add_parser(
         "mcp", help="run the MCP server over stdio (needs the mcp extra: pip install 'agentodoo[mcp]')",
         description="Serves read tools, plan tools and apply_plan to an MCP client over stdio. apply_plan writes "
                     "only after you confirm through the client (elicitation) or a host confirmation; "
                     "otherwise it refuses and gives the `agentodoo apply` command to run yourself.")
+    mcp.add_argument(
+        "--config-from-host", action="store_true",
+        help="bundle mode (Claude Desktop): take the one profile 'default' and its API key from the "
+             "AGENTODOO_HOST_* variables the host sets; nothing is saved and the keychain is not used")
     return parser
 
 
@@ -179,6 +184,8 @@ def main(
     code = EXIT_OK
     try:
         if args.command == "mcp":
+            if args.config_from_host:  # the only place environment variables are read (stage 6 S2)
+                profiles, credentials = host_config.load(os.environ, state_dir)
             return run_mcp(profiles, credentials, transport_factory, state_dir)
         if args.command == "apply":
             service.check_cli_confirmation(args.plan_id, args.confirm)
@@ -216,7 +223,7 @@ def main(
     return code
 
 
-def run_mcp(profiles: ProfileStore, credentials: CredentialStore,
+def run_mcp(profiles: ProfileStore | host_config.HostProfiles, credentials: CredentialStore,
             transport_factory: Callable[[Profile], Transport], state_dir: Path) -> int:
     try:
         from agentodoo.mcp_server import build_server

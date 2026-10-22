@@ -1,7 +1,7 @@
 ---
 name: agentodoo
 description: "Trigger: Odoo hours, timesheet, parte de horas, imputar horas, cargar horas, Odoo task, AgentOdoo, mcp__agentodoo. Read Odoo projects/tasks and log hours or create tasks through AgentOdoo MCP tools, only after explicit user confirmation."
-license: Apache-2.0
+license: All rights reserved (no open-source license yet)
 metadata:
   author: agentodoo
   version: "1.0"
@@ -9,7 +9,7 @@ metadata:
 
 ## Activation Contract
 
-Use when the user wants to see Odoo projects, tasks or stages, log hours, or create a task, and the AgentOdoo MCP server (`agentodoo`) is available. In Pi the tools are `mcp__agentodoo__<tool>`: `doctor`, `projects`, `tasks`, `stages`, `project_stages`, `plan_task`, `plan_time`, `apply_plan`.
+Use when the user wants to see Odoo projects, tasks or stages, log hours, or create a task, and the AgentOdoo MCP server (`agentodoo`) is available. In Pi the tools are `mcp__agentodoo__<tool>`: `doctor`, `projects`, `tasks`, `stages`, `project_stages`, `set_closing_stages`, `plan_task`, `plan_time`, `apply_plan`.
 
 Reply to the user in their language. Tool arguments (descriptions, task names) follow what the user wrote or approved.
 
@@ -22,9 +22,12 @@ Reply to the user in their language. Tool arguments (descriptions, task names) f
 - **Times.** Engram timestamps are UTC; convert to the user's local time before assigning a date. Commit times can show when work was pushed, not when it was done; never treat them as effort.
 - **Daily limit.** Respect the profile's `max_daily_hours` (default 8 h, shown by `doctor`). Redistribute only across days where the work really happened; never invent dates.
 - **Every write = plan → table → explicit yes → `apply_plan(plan_id)` once.** Silence, "ok?" or approval of a different plan is not a yes.
+- **Plan card clients (Claude Desktop).** When a `plan_task`/`plan_time` result has `"confirm_on": "card"`, the person confirms on the AgentOdoo plan card, not in the chat; follow its `next_step`: do not repeat the plan as a table, do not ask "shall I apply it?", and do not call `apply_plan` (it refuses there). Say in one line that nothing is written yet and that they should press **Confirm** on the card to write it or **Cancel** to discard it; offer to redo the plan if a detail (description, hours, date) should change. After the click, the card tells you the outcome in your context (written with its record id, cancelled, or failed): report that, and never apply or re-plan a plan the card says was written.
 - **Never pass `host_confirmation`.** The host fills it after the user approves its dialog.
 - **Never run `agentodoo apply` through a shell yourself.** If `apply_plan` refuses with a CLI command, show the command to the user and stop.
 - **Past hours stay untouched.** Never offer to edit, move or delete existing timesheets; AgentOdoo cannot, and changes to past hours are the project manager's decision.
+- **Listings by stage.** Show tasks and projects grouped by their `stage`.
+- **Closing stages are the user's call.** When a listing shows stages whose names suggest finished or cancelled work (e.g. FINALIZADO, Hecho, Done, Cancelada) that are not closing yet (`doctor` shows `closed_stage_ids` / `closed_project_stage_ids`), ask once which of them mean finished, with their IDs. Then call `set_closing_stages` with exactly the confirmed IDs (`stage_ids` for tasks, `project_stage_ids` for projects). Never decide alone. Say it only changes the local view, not Odoo.
 - **Never retry a plan** after `read_back_mismatch` or `unknown_outcome`.
 
 ## Decision Gates

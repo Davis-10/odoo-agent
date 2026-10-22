@@ -1,0 +1,82 @@
+{
+  "manifest_version": "0.4",
+  "name": "agentodoo",
+  "display_name": "AgentOdoo",
+  "version": "0.0.0",
+  "description": "See your Odoo tasks and log hours from Claude. Nothing is written to Odoo until you press Confirm.",
+  "long_description": "AgentOdoo reads your open and unassigned Odoo tasks and projects, and plans new tasks and timesheet lines. Every write is shown as a card with Confirm and Cancel; nothing is written until you confirm. It never edits or deletes anything in Odoo. Works with Odoo 14 and newer.",
+  "author": {
+    "name": "AgentOdoo contributors"
+  },
+  "homepage": "https://github.com/Davis-10/odoo-agent",
+  "icon": "icon.png",
+  "server": {
+    "type": "uv",
+    "entry_point": "server/main.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "--extra", "mcp", "server/main.py"],
+      "env": {
+        "AGENTODOO_HOST_URL": "${user_config.odoo_url}",
+        "AGENTODOO_HOST_DATABASE": "${user_config.database}",
+        "AGENTODOO_HOST_USERNAME": "${user_config.username}",
+        "AGENTODOO_HOST_API_KEY": "${user_config.api_key}",
+        "AGENTODOO_HOST_MAX_DAILY_HOURS": "${user_config.max_daily_hours}"
+      }
+    }
+  },
+  "tools": [
+    {"name": "doctor", "description": "Check server version, login and required fields (read-only)."},
+    {"name": "projects", "description": "Projects where I have open tasks, or search any active project or client (read-only)."},
+    {"name": "tasks", "description": "Open tasks assigned to me or with no assignee (read-only)."},
+    {"name": "stages", "description": "Task stages with IDs (read-only)."},
+    {"name": "project_stages", "description": "Project stages with IDs (read-only)."},
+    {"name": "set_closing_stages", "description": "Remember which stages mean finished, after you confirm them. Stored on this computer; never writes to Odoo."},
+    {"name": "plan_task", "description": "Plan one new task assigned to me; shows a card to confirm. Writes nothing by itself."},
+    {"name": "plan_time", "description": "Plan one timesheet line of mine; shows a card to confirm. Writes nothing by itself."},
+    {"name": "apply_plan", "description": "Write a saved plan only after the user confirms it."}
+  ],
+  "keywords": ["odoo", "timesheets", "tasks", "erp", "hours"],
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "python": ">=3.11"
+    }
+  },
+  "user_config": {
+    "odoo_url": {
+      "type": "string",
+      "title": "Odoo URL",
+      "description": "Your Odoo address, starting with https://, for example https://odoo.example.com",
+      "required": true
+    },
+    "database": {
+      "type": "string",
+      "title": "Database",
+      "description": "Odoo database name (ask your admin if unsure)",
+      "required": true
+    },
+    "username": {
+      "type": "string",
+      "title": "Username",
+      "description": "Odoo login (usually your email)",
+      "required": true
+    },
+    "api_key": {
+      "type": "string",
+      "title": "API key",
+      "description": "Create it in Odoo: your avatar → My Profile → Account Security → New API Key. Stored in your system keychain.",
+      "required": true,
+      "sensitive": true
+    },
+    "max_daily_hours": {
+      "type": "number",
+      "title": "Daily hours limit",
+      "description": "Most hours you can log on one day, across all projects",
+      "required": false,
+      "default": 8,
+      "min": 0.5,
+      "max": 24
+    }
+  }
+}

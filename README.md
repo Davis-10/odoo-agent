@@ -4,7 +4,7 @@ A personal work assistant for Odoo: lets an AI agent see my assigned and unassig
 
 **New here? Follow the step-by-step guide: [INSTALL.md](INSTALL.md).**
 
-Status: AgentOdoo ships a CLI, an MCP server and an agent skill. The only Odoo writes are creating a task and creating a timesheet line, each through a saved plan you confirm; nothing is ever updated or deleted in Odoo. Supported clients today: Claude Code (confirmation through MCP elicitation) and gentle-pi / Pi (confirmation extension). Planned: a one-click Claude Desktop bundle and ChatGPT (needs a hosted server).
+Status: AgentOdoo ships a CLI, an MCP server and an agent skill. The only Odoo writes are creating a task and creating a timesheet line, each through a saved plan you confirm; nothing is ever updated or deleted in Odoo. Supported clients today: Claude Desktop (one-click `.mcpb` bundle; confirmation on a plan card), Claude Code (confirmation through MCP elicitation) and gentle-pi / Pi (confirmation extension). Planned: ChatGPT (needs a hosted server).
 
 - Design: [`docs/design.md`](docs/design.md)
 
@@ -136,11 +136,26 @@ The tools call the same code as the CLI, so every rule above applies identically
 | `tasks` | `scope` (`mine` or `unassigned`), `project_id`, `limit` | read-only |
 | `stages` | `project_id`, `name` | read-only |
 | `project_stages` | `name` | read-only |
-| `plan_task` | `project_id`, `name`, `description`, `planned_hours`, `stage_id` | saves a plan only |
-| `plan_time` | `task_id`, `hours`, `date`, `description` | saves a plan only |
+| `set_closing_stages` | `stage_ids`, `project_stage_ids` | stored locally, never writes to Odoo; not read-only, not destructive |
+| `plan_task` | `project_id`, `name`, `description`, `planned_hours`, `stage_id` | saves a plan only; shows the plan card |
+| `plan_time` | `task_id`, `hours`, `date`, `description` | saves a plan only; shows the plan card |
 | `apply_plan` | `plan_id`, `host_confirmation` | destructive |
+| `confirm_plan` | `plan_id` | destructive; app-only (called by the plan card) |
 
-`apply_plan` never writes on the model's word. It checks, in this order:
+`set_closing_stages` replaces the closing stage list, the closing project stage list, or both, after checking every ID exists in Odoo like `profile set-closed-stages` / `set-closed-project-stages`; an omitted list is kept, `[]` clears one, unknown IDs are refused and nothing is stored. It returns `profile`, `closed_stage_ids` and `closed_project_stage_ids`.
+
+### Plan card (MCP Apps)
+
+Clients that show MCP Apps, such as Claude Desktop, display each plan from `plan_task` or `plan_time` as a card in the chat: what (task or timesheet line), project, task, stage, date, hours, description, your day total before → after, and the exact values, with **Confirm** and **Cancel** buttons. The card is the resource `ui://agentodoo/plan-<version>.html` (`text/html;profile=mcp-app`; versioned so hosts that cache UI resources show the new card after an update), a single self-contained HTML file that loads nothing from the network; its labels are in English.
+
+- **Confirm** disables both buttons, calls `confirm_plan` with the plan ID and shows the receipt (status and record ID) or the error.
+- **Cancel** disables both buttons and shows "Nothing was written". It calls nothing.
+
+`confirm_plan` is declared `_meta.ui.visibility: ["app"]`, so the client hides it from the model and only the card can call it. It writes through the same `apply` as `apply_plan` and the CLI, with every rule below. In these clients `apply_plan` refuses and tells the agent to let you press Confirm on the card. A client counts as showing MCP Apps when it declares the extension `io.modelcontextprotocol/ui` with that MIME type; in every other client `confirm_plan` refuses (they may not hide it from the model) and `apply_plan` works as described below.
+
+Known limit: the server cannot tell who called `confirm_plan`. The guarantee that a person pressed Confirm relies on the client enforcing app-only visibility, as the MCP Apps specification requires.
+
+`apply_plan` never writes on the model's word. In clients without MCP Apps it checks, in this order:
 
 1. **The client can ask you (MCP elicitation).** The server shows the plan (what, project, task, date, hours, your day total after the line, and the exact values) and writes only if you accept and tick confirm. Decline, cancel or an unticked confirm write nothing. Claude clients also show their own approval prompt because the tool is marked destructive.
 2. **A host confirmation.** Hosts without elicitation, such as gentle-pi, confirm through their own dialog and then pass `host_confirmation`: the lowercase hex HMAC-SHA256 of the plan ID under the key in `host-gate.key`. Any other value counts as no confirmation.
@@ -169,12 +184,12 @@ cd /path/to/AgentOdoo
 .venv/bin/agentodoo host-gate init
 pi mcp add agentodoo -- /path/to/AgentOdoo/.venv/bin/agentodoo mcp   # the server name must be "agentodoo"
 pi install /path/to/AgentOdoo                                        # confirmation extension + agentodoo skill
-pi mcp list                                                          # agentodoo: connected, 8 tools
+pi mcp list                                                          # agentodoo: connected, 9 tools
 ```
 
 The repository root is a Pi package (`package.json`): it loads the confirmation extension from `integrations/pi/` and the skill from `skills/agentodoo/`. Start a new Pi session afterwards. Ask in plain language, for example "¿qué tareas tengo abiertas en Globex?" or "cargá 2 horas de la reunión con Globex de ayer". Before any write, Pi shows a dialog with the plan; nothing is written unless you approve it.
 
-Claude Code and Claude Desktop: register the same stdio command (`/path/to/AgentOdoo/.venv/bin/agentodoo mcp`) as an MCP server named `agentodoo` and add `skills/agentodoo` as a skill; they confirm through MCP elicitation and their own approval prompt. A one-click Claude Desktop bundle (`.mcpb`) is planned. ChatGPT needs a remote server and is not supported yet.
+Claude Code and Claude Desktop: register the same stdio command (`/path/to/AgentOdoo/.venv/bin/agentodoo mcp`) as an MCP server named `agentodoo` and add `skills/agentodoo` as a skill. Claude Desktop confirms on the plan card; Claude Code through MCP elicitation and its own approval prompt. For Claude Desktop, the one-click `.mcpb` bundle from the releases page is the easiest path (see INSTALL.md). ChatGPT needs a remote server and is not supported yet.
 
 ## Development
 
@@ -182,6 +197,15 @@ Claude Code and Claude Desktop: register the same stdio command (`/path/to/Agent
 make test   # offline: fakes and a localhost XML-RPC server, never a real Odoo; MCP tests skip without the extra
 make lint
 ```
+
+### Claude Desktop bundle
+
+```bash
+scripts/build-mcpb.sh        # dist/agentodoo-<version>.mcpb (needs npx; runs a pinned @anthropic-ai/mcpb validate + pack)
+scripts/build-skill-zip.sh   # dist/agentodoo-skill.zip, the skill upload (agentodoo/SKILL.md)
+```
+
+The bundle (`packaging/mcpb/`) is a `uv` server: Claude Desktop installs Python and the `mcp` extra itself and runs `agentodoo mcp --config-from-host`. Only in that mode the server reads its one profile, `default`, from the `AGENTODOO_HOST_*` variables the install form fills in (URL, database, username, API key, and optionally `MAX_DAILY_HOURS`). The profile and key stay in memory; the profiles file and keychain are not used, plans and receipts still go to the state directory. Closing stages are not in the form: `set_closing_stages` keeps them in `<state dir>/host-settings.json` (mode 0600, no credentials), per Odoo URL and database, and the server loads them at start. If that file cannot be read, no closing stages apply and `doctor` warns. When a setting is missing or invalid, every tool says which one to fill in. Without the flag these variables are ignored.
 
 ## License
 

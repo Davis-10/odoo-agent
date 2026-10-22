@@ -21,3 +21,6 @@ version = {attr = "agentodoo.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+agentodoo = ["ui/*.html"]

@@ -14,10 +14,41 @@ AgentOdoo lets your AI agent read your Odoo tasks and log your hours. Nothing is
 |---|---|---|
 | Claude Code (terminal) | Supported | Claude Code asks you through an MCP confirmation dialog |
 | gentle-pi / Pi | Supported | A small confirmation extension shows the plan and asks you |
-| Claude Desktop | Planned | One-click `.mcpb` bundle. Not yet: Desktop does not show MCP confirmations and needs a bundled runtime |
+| Claude Desktop | Supported | A plan card in the chat with **Confirm** and **Cancel**; only you can press Confirm |
 | ChatGPT | Planned | Needs a hosted server |
 
-## Before you start
+## Claude Desktop (no terminal needed)
+
+You need the Claude Desktop app and your Odoo API key (see above). No Python or terminal: Claude Desktop downloads what AgentOdoo needs the first time it starts, which can take a minute or two.
+
+1. **Download two files** from the latest release: <https://github.com/Davis-10/odoo-agent/releases/latest>
+   - `agentodoo-<version>.mcpb` (the server)
+   - `agentodoo-skill.zip` (the skill)
+2. **Install the server:** double-click the `.mcpb` file (or Claude Desktop → **Settings → Extensions → Advanced settings → Install Extension…**).
+3. **Fill in the form** Claude Desktop shows:
+
+   | Field | What to enter |
+   |---|---|
+   | Odoo URL | Your company's Odoo address, for example `https://odoo.example.com` |
+   | Database | Your Odoo database name (ask your admin) |
+   | Username | Your Odoo login, usually your email |
+   | API key | The key you created in Odoo. Claude Desktop stores it in your system keychain |
+   | Max daily hours | Your company's daily limit (default 8) |
+
+   You don't enter which stages mean finished: the first time a listing shows stages such as "Done" or "Cancelled", Claude asks you which ones mean finished and remembers your answer on this computer. It never changes anything in Odoo.
+
+4. **Add the skill:** Claude Desktop → **Customize → Skills → + → Upload a skill**, and choose `agentodoo-skill.zip`.
+5. **Try it** in a new chat: "What tasks do I have open?" (or in your language, e.g. "¿qué tareas tengo abiertas?").
+
+When you ask it to log hours or create a task, Claude prepares a **plan card** in the chat. Check it and press **Confirm** to write it to Odoo, or **Cancel** to discard it. Claude cannot press Confirm for you. Claude may also ask to "allow" AgentOdoo tools: allowing the read and plan tools always is fine; they never write to Odoo.
+
+**Update:** download the new `.mcpb` from the latest release and double-click it; your settings are kept. Start a new chat afterwards. If the card still looks old, quit Claude Desktop (⌘Q) and open it again.
+
+**Remove:** **Settings → Extensions → AgentOdoo → Uninstall**, delete the skill under **Customize → Skills**, and delete the API key in Odoo.
+
+## Claude Code and Pi (terminal)
+
+### Before you start
 
 - Python 3.11 or newer (`python3 --version`)
 - git (`git --version`)
@@ -25,7 +56,7 @@ AgentOdoo lets your AI agent read your Odoo tasks and log your hours. Nothing is
 
 Commands below are for macOS and Linux. **Windows:** use `python -m venv .venv` and replace `.venv/bin/...` with `.venv\Scripts\...` (for example `.venv\Scripts\agentodoo.exe`).
 
-## Step 1 — Install the server
+### Step 1 — Install the server
 
 Pick a folder for the code. This guide uses `~/tools`. Wherever you see `/ABS/PATH/odoo-agent`, use the **full path** to your copy (print it with `pwd` inside the folder, for example `/Users/you/tools/odoo-agent`). Apps start the server from anywhere, so short paths like `~/...` or `./...` do not work there.
 
@@ -38,7 +69,7 @@ python3 -m venv .venv
 pwd    # this is your /ABS/PATH/odoo-agent
 ```
 
-## Step 2 — Connect your Odoo
+### Step 2 — Connect your Odoo
 
 Replace the URL, database and email with yours. `acme` is just a short name you choose for this Odoo.
 
@@ -51,9 +82,9 @@ Replace the URL, database and email with yours. `acme` is just a short name you 
 - Run `profile set-key` **yourself** in a terminal. It asks for the API key, hides what you type, and stores it in your system keychain. Not in a file, not in the chat.
 - `doctor` should print `"status": "ok"`. If not, see [Troubleshooting](#troubleshooting).
 
-## Step 3 — Connect your app
+### Step 3 — Connect your app
 
-### Claude Code
+#### Claude Code
 
 ```bash
 claude mcp add --scope user agentodoo -- /ABS/PATH/odoo-agent/.venv/bin/agentodoo mcp
@@ -71,7 +102,7 @@ Restart Claude Code, then type `/mcp`: `agentodoo` should show as connected.
 - "Which unassigned tasks are there in Acme?"
 - "Log 2 hours yesterday on my Acme task for the website meeting."
 
-#### Let Claude Code do the setup for you
+##### Let Claude Code do the setup for you
 
 Paste this into Claude Code. It does Step 1 and Step 3; you still do Step 2 yourself.
 
@@ -85,7 +116,7 @@ Do NOT ask me for my Odoo API key, do not read it, and do not run `agentodoo pro
 I will run the profile and key commands myself in my own terminal.
 ```
 
-### gentle-pi / Pi
+#### gentle-pi / Pi
 
 ```bash
 /ABS/PATH/odoo-agent/.venv/bin/agentodoo host-gate init
@@ -120,6 +151,8 @@ If your app cannot ask you, AgentOdoo refuses and gives you a command to run you
 | `agentodoo` not connected in `/mcp` or `pi mcp list` | Check the command uses the full absolute path and that `.venv/bin/agentodoo mcp` exists. Re-run Step 1 and restart the app. |
 | Write refused, with a command to run | Your app could not ask for confirmation. Read the plan, then run the command it shows in your terminal. |
 | Refused: daily limit | The day would go over the hours limit (8 by default). Check the date and hours, or change it: `agentodoo profile set-max-daily-hours acme 9`. |
+| Claude Desktop: "AgentOdoo is not configured: missing …" | Open **Settings → Extensions → AgentOdoo** and fill in the fields it names. |
+| Claude Desktop: no plan card appears | Update Claude Desktop and start a new chat. The first start of AgentOdoo can take a minute while it downloads Python. |
 | Refused: stage is closing or not open | Pick an open stage. `agentodoo stages --profile acme` lists stages; `profile set-closed-stages` sets which ones count as closing. |
 
 ## Update

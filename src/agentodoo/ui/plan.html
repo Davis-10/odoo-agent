@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentOdoo plan</title>
+<!-- AgentOdoo plan card (MCP Apps, ext-apps spec 2026-01-26). Self-contained: no network loads.
+     Talks to the host with the spec's postMessage JSON-RPC: ui/initialize, ui/notifications/tool-result,
+     tools/call confirm_plan. Text is set with textContent only, never parsed as HTML. -->
+<style>
+  /* Kanagawa Dragon palette. Every color is set explicitly (background and text together):
+     the host may paint the frame light while the OS is dark, so never inherit only one of them. */
+  :root {
+    --bg: #181616; --panel: #1d1c19; --line: #282727; --fg: #c5c9c5; --muted: #737c73; --ash: #a6a69c;
+    --green: #87a987; --red: #c4746e; --yellow: #c4b28a; --blue: #8ba4b0; --aqua: #8ea4a2; --violet: #a292a3;
+    color-scheme: dark;
+  }
+  html, body { background: var(--bg); color: var(--fg); }
+  body { margin: 0; padding: 14px; font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .eyebrow { margin: 0 0 2px; color: var(--violet); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+  h1 { margin: 0 0 14px; font-size: 17px; font-weight: 600; color: var(--fg); }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0 0 14px; }
+  dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 2px; }
+  dd { margin: 0; color: var(--fg); overflow-wrap: anywhere; }
+  dd.hours { color: var(--yellow); font-weight: 600; }
+  dd.date { color: var(--blue); }
+  dd.total { color: var(--aqua); }
+  dd.mono, details dd { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+  details { margin: 0 0 14px; color: var(--ash); font-size: 12px; }
+  summary { cursor: pointer; color: var(--muted); }
+  details dl { margin: 8px 0 0; }
+  .actions { display: flex; gap: 10px; }
+  button { font: inherit; font-weight: 600; padding: 8px 18px; border-radius: 8px; cursor: pointer;
+           border: 1px solid var(--line); background: transparent; color: var(--fg); }
+  button#confirm { background: var(--green); border-color: var(--green); color: var(--bg); }
+  button:hover:not(:disabled) { filter: brightness(1.1); }
+  button:disabled { opacity: .45; cursor: default; }
+  #status { margin-top: 12px; white-space: pre-wrap; color: var(--ash); }
+  #status.ok { color: var(--green); }
+  #status.error { color: var(--red); }
+</style>
+</head>
+<body>
+<div class="card">
+<p class="eyebrow" id="eyebrow">AgentOdoo · needs your confirmation</p>
+<h1 id="title">Loading plan…</h1>
+<dl id="details"></dl>
+<details><summary>Details</summary><dl id="technical"></dl></details>
+<div class="actions">
+  <button id="confirm" type="button">Confirm</button>
+  <button id="cancel" type="button">Cancel</button>
+</div>
+<div id="status" role="status"></div>
+</div>
+<script>
+(function () {
+  "use strict";
+  var host = window.parent;
+  var pending = {};
+  var nextId = 1;
+  var plan = null;
+  var done = true;
+  var confirmButton = document.getElementById("confirm");
+  var cancelButton = document.getElementById("cancel");
+  var statusLine = document.getElementById("status");
+
+  function send(message) { host.postMessage(message, "*"); }
+  function notify(method, params) { send({jsonrpc: "2.0", method: method, params: params || {}}); }
+  function request(method, params, callback) {
+    var id = nextId++;
+    pending[id] = callback;
+    send({jsonrpc: "2.0", id: id, method: method, params: params});
+  }
+
+  function setButtons(enabled) {
+    done = !enabled;
+    confirmButton.disabled = !enabled;
+    cancelButton.disabled = !enabled;
+  }
+  function show(text, tone) { statusLine.textContent = text; statusLine.className = tone || ""; resize(); }
+  // confirm_plan is hidden from the model, so tell it the outcome for its next turn (spec: ui/update-model-context).
+  function finish(state, context) {
+    document.getElementById("eyebrow").textContent = "AgentOdoo · " + state;
+    request("ui/update-model-context", {content: [{type: "text", text: context}]}, function () {});
+  }
+  function resize() {
+    var root = document.documentElement;
+    notify("ui/notifications/size-changed", {width: root.scrollWidth, height: root.scrollHeight});
+  }
+
+  function resultText(result) {
+    var parts = (result && result.content) || [];
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].type === "text") return parts[i].text;
+    }
+    return "";
+  }
+  function resultJson(result) {
+    if (result && result.structuredContent) return result.structuredContent;
+    try { return JSON.parse(resultText(result)); } catch (error) { return null; }
+  }
+  function named(item) { return item ? item.name + " (" + item.id + ")" : ""; }
+  function hours(value) { return Number(value) + " h"; }
+
+  function render(data) {
+    var d = data.display || {};
+    var rows = [];
+    if (data.kind === "timesheet") {
+      document.getElementById("title").textContent = "Timesheet line";
+      rows.push(["Project", named(d.project)], ["Task", named(d.task)], ["Date", d.date, "date"],
+                ["Hours", hours(d.hours), "hours"], ["Description", d.description]);
+      if (d.day_hours_after !== undefined) {
+        rows.push(["Day total", hours(d.day_hours_before) + " → " + hours(d.day_hours_after), "total"]);
+      }
+    } else {
+      document.getElementById("title").textContent = "New task";
+      rows.push(["Project", named(d.project)], ["Task", d.name]);
+      if (d.stage) rows.push(["Stage", named(d.stage)]);
+      if (d.planned_hours !== null && d.planned_hours !== undefined) rows.push(["Planned hours", hours(d.planned_hours), "hours"]);
+      if (d.description) rows.push(["Description", d.description]);
+    }
+    fill("details", rows);
+    fill("technical", [["Profile", data.profile], ["Values", JSON.stringify(data.values)], ["Plan", data.plan_id]]);
+  }
+
+  function fill(listId, rows) {
+    var list = document.getElementById(listId);
+    list.replaceChildren();
+    rows.forEach(function (row) {
+      var term = list.appendChild(document.createElement("dt"));
+      term.textContent = row[0];
+      var value = list.appendChild(document.createElement("dd"));
+      if (row[2]) value.className = row[2];
+      value.textContent = String(row[1] === undefined || row[1] === null ? "" : row[1]);
+    });
+  }
+
+  function onToolResult(result) {
+    var data = resultJson(result);
+    if (result.isError || !data || !data.plan_id) {
+      document.getElementById("title").textContent = "No plan";
+      show(resultText(result) || "No plan to confirm");
+      return;
+    }
+    plan = data;
+    render(plan);
+    setButtons(true);
+    resize();
+  }
+
+  confirmButton.addEventListener("click", function () {
+    if (done || !plan) return;
+    setButtons(false);
+    show("Writing to Odoo…");
+    request("tools/call", {name: "confirm_plan", arguments: {plan_id: plan.plan_id}}, function (message) {
+      var result = message.result || {};
+      if (message.error || result.isError) {
+        var error = message.error ? (message.error.message || "Error") : (resultText(result) || "Error");
+        show(error, "error");
+        return finish("not written", "AgentOdoo plan " + plan.plan_id +
+          ": the user pressed Confirm on the plan card but the write failed: " + error);
+      }
+      var receipt = resultJson(result) || {};
+      show("Written: " + receipt.status + ", record " + receipt.record_id, "ok");
+      finish("written", "AgentOdoo plan " + plan.plan_id + " was confirmed by the user on the plan card and written " +
+        "to Odoo: status " + receipt.status + ", record " + receipt.record_id + ". Do not apply or re-plan it.");
+    });
+  });
+
+  cancelButton.addEventListener("click", function () {
+    if (done) return;
+    setButtons(false);
+    show("Nothing was written");
+    finish("discarded", "AgentOdoo plan " + plan.plan_id +
+      " was cancelled by the user on the plan card; nothing was written to Odoo.");
+  });
+
+  window.addEventListener("message", function (event) {
+    if (event.source !== host) return;
+    var message = event.data;
+    if (!message || message.jsonrpc !== "2.0") return;
+    if (message.method === undefined && pending[message.id]) {
+      var callback = pending[message.id];
+      delete pending[message.id];
+      callback(message);
+    } else if (message.method === "ping" && message.id !== undefined) {
+      send({jsonrpc: "2.0", id: message.id, result: {}});
+    } else if (message.method === "ui/notifications/tool-result") {
+      onToolResult(message.params || {});
+    }
+  });
+
+  setButtons(false);
+  request("ui/initialize", {appInfo: {name: "agentodoo-plan", version: "1"}, appCapabilities: {},
+                            protocolVersion: "2026-01-26"}, function () {
+    notify("ui/notifications/initialized");
+  });
+})();
+</script>
+</body>
+</html>

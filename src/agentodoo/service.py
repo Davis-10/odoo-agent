@@ -50,8 +50,10 @@ def check_limit(limit: int) -> int:
 
 # Read commands -----------------------------------------------------------------
 
-def doctor(session: OdooSession) -> dict:
-    return doctor_report(session)
+def doctor(session: OdooSession, warnings: list[str] | None = None) -> dict:
+    report = doctor_report(session)
+    report["warnings"] += warnings or []  # local settings problems, e.g. unreadable host settings
+    return report
 
 
 def doctor_exit_code(result: dict) -> int:
@@ -181,13 +183,23 @@ def profile_set_key(profiles: ProfileStore, credentials: CredentialStore, name: 
     return {"key_stored": name}
 
 
+def check_closing_stage_ids(profile: Profile, credentials: CredentialStore, transport_factory: TransportFactory,
+                            stage_ids: list[int] | None, project_stage_ids: list[int] | None) -> None:
+    """Refuse IDs that do not exist in Odoo, naming them. Reads only; nothing is stored."""
+    if not stage_ids and not project_stage_ids:
+        return
+    session = open_session(profile, credentials, transport_factory)
+    for ids, missing, label in ((stage_ids, missing_stage_ids, "stage"),
+                                (project_stage_ids, missing_project_stage_ids, "project stage")):
+        unknown = missing(session, ids) if ids else []
+        if unknown:
+            raise ConfigurationError(f"Unknown {label} IDs in Odoo: {', '.join(map(str, unknown))}")
+
+
 def profile_set_closed_stages(profiles: ProfileStore, credentials: CredentialStore,
                               transport_factory: TransportFactory, name: str, stage_ids: list[int]) -> dict:
     profile = profiles.get(name)
-    if stage_ids:
-        unknown = missing_stage_ids(open_session(profile, credentials, transport_factory), stage_ids)
-        if unknown:
-            raise ConfigurationError(f"Unknown stage IDs in Odoo: {', '.join(map(str, unknown))}")
+    check_closing_stage_ids(profile, credentials, transport_factory, stage_ids, None)
     profile = profiles.set_closed_stages(name, stage_ids)
     return {"profile": profile.name, "closed_stage_ids": list(profile.closed_stage_ids)}
 
@@ -195,12 +207,25 @@ def profile_set_closed_stages(profiles: ProfileStore, credentials: CredentialSto
 def profile_set_closed_project_stages(profiles: ProfileStore, credentials: CredentialStore,
                                       transport_factory: TransportFactory, name: str, stage_ids: list[int]) -> dict:
     profile = profiles.get(name)
-    if stage_ids:
-        unknown = missing_project_stage_ids(open_session(profile, credentials, transport_factory), stage_ids)
-        if unknown:
-            raise ConfigurationError(f"Unknown project stage IDs in Odoo: {', '.join(map(str, unknown))}")
+    check_closing_stage_ids(profile, credentials, transport_factory, None, stage_ids)
     profile = profiles.set_closed_project_stages(name, stage_ids)
     return {"profile": profile.name, "closed_project_stage_ids": list(profile.closed_project_stage_ids)}
+
+
+def set_closing_stages(profiles: ProfileStore, credentials: CredentialStore, transport_factory: TransportFactory,
+                       name: str | None, stage_ids: list[int] | None = None,
+                       project_stage_ids: list[int] | None = None) -> dict:
+    """Both kinds at once (stage 6 S6): every ID is checked before either list is stored; None keeps a list."""
+    if stage_ids is None and project_stage_ids is None:
+        raise ConfigurationError("Give stage_ids, project_stage_ids or both")
+    profile = profiles.resolve(name)
+    check_closing_stage_ids(profile, credentials, transport_factory, stage_ids, project_stage_ids)
+    if stage_ids is not None:
+        profile = profiles.set_closed_stages(profile.name, stage_ids)
+    if project_stage_ids is not None:
+        profile = profiles.set_closed_project_stages(profile.name, project_stage_ids)
+    return {"profile": profile.name, "closed_stage_ids": list(profile.closed_stage_ids),
+            "closed_project_stage_ids": list(profile.closed_project_stage_ids)}
 
 
 def profile_set_max_daily_hours(profiles: ProfileStore, name: str, hours: float) -> dict:
